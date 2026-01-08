@@ -61,12 +61,12 @@ func (e *Executor) Execute(commandName, target, sessionID string, outputChan cha
 
 	e.storeCommand(commandID, fullCommand, stopChan)
 
-	go e.runCommand(commandID, fullCommand, cmdConfig.IgnoreTarget, stopChan, outputChan)
+	go e.runCommand(commandID, fullCommand, stopChan, outputChan)
 
 	return commandID
 }
 
-func (e *Executor) runCommand(commandID, fullCommand string, ignoreTarget bool, stopChan <-chan bool, outputChan chan<- Output) {
+func (e *Executor) runCommand(commandID, fullCommand string, stopChan <-chan bool, outputChan chan<- Output) {
 	defer func() {
 		e.removeCommand(commandID)
 		close(outputChan)
@@ -113,9 +113,10 @@ func (e *Executor) runCommand(commandID, fullCommand string, ignoreTarget bool, 
 	done := make(chan error, 1)
 	stdoutDone := make(chan bool, 1)
 	stderrDone := make(chan bool, 1)
+	stopped := make(chan bool, 1)
 
-	go e.streamOutput(stdout, outputChan, stdoutDone, false)
-	go e.streamOutput(stderr, outputChan, stderrDone, true)
+	go e.streamOutput(stdout, outputChan, stdoutDone, stopped, false)
+	go e.streamOutput(stderr, outputChan, stderrDone, stopped, true)
 
 	go func() {
 		done <- cmd.Wait()
@@ -124,6 +125,11 @@ func (e *Executor) runCommand(commandID, fullCommand string, ignoreTarget bool, 
 	select {
 	case <-stopChan:
 		e.stopCommand(commandID)
+		// Signal streamOutput goroutines to stop
+		close(stopped)
+		// Wait for goroutines to finish
+		<-stdoutDone
+		<-stderrDone
 		outputChan <- Output{
 			Output:     "\n*** Stopped ***",
 			IsComplete: true,
@@ -149,16 +155,27 @@ func (e *Executor) runCommand(commandID, fullCommand string, ignoreTarget bool, 
 	}
 }
 
-func (e *Executor) streamOutput(pipe interface{ Read([]byte) (int, error) }, outputChan chan<- Output, done chan<- bool, isStderr bool) {
+func (e *Executor) streamOutput(pipe interface{ Read([]byte) (int, error) }, outputChan chan<- Output, done chan<- bool, stopped <-chan bool, isStderr bool) {
 	defer func() { done <- true }()
 
 	scanner := bufio.NewScanner(pipe)
 	for scanner.Scan() {
-		line := scanner.Text()
-		outputChan <- Output{
-			Output:     line,
-			IsError:    isStderr,
-			IsComplete: false,
+		select {
+		case <-stopped:
+			// Stop signal received, exit gracefully
+			return
+		default:
+			line := scanner.Text()
+			// Use select to avoid panic on closed channel
+			select {
+			case <-stopped:
+				return
+			case outputChan <- Output{
+				Output:     line,
+				IsError:    isStderr,
+				IsComplete: false,
+			}:
+			}
 		}
 	}
 }

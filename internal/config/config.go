@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"os"
 	"slices"
-	"strings"
 
 	"gopkg.in/yaml.v3"
 )
@@ -124,53 +123,54 @@ func extractCommandOrder(data []byte) []string {
 }
 
 func extractCommandsFromNode(node *yaml.Node, commands *[]commandWithLine) {
-	for i := 0; i < len(node.Content); i++ {
-		child := node.Content[i]
+	if node.Kind == yaml.DocumentNode && len(node.Content) > 0 {
+		extractCommandsFromNode(node.Content[0], commands)
+		return
+	}
 
-		if child.Kind == yaml.MappingNode {
-			var key string
-			for j := 0; j < len(child.Content); j += 2 {
-				if child.Content[j].Kind == yaml.ScalarNode {
-					key = child.Content[j].Value
-					break
-				}
-			}
+	if node.Kind == yaml.MappingNode {
+		for i := 0; i < len(node.Content); i += 2 {
+			keyNode := node.Content[i]
+			valueNode := node.Content[i+1]
 
-			if strings.HasPrefix(key, "commands:") || (key == "commands" && len(child.Content) > 1) {
-				for _, cmdNode := range child.Content {
-					if cmdNode.Kind == yaml.MappingNode {
-						cmdName := ""
+			// Found the "commands" key
+			if keyNode.Value == "commands" && valueNode.Kind == yaml.MappingNode {
+				// Iterate through each command in the commands map
+				for j := 0; j < len(valueNode.Content); j += 2 {
+					cmdNameNode := valueNode.Content[j]
+					cmdValueNode := valueNode.Content[j+1]
+
+					if cmdNameNode.Kind == yaml.ScalarNode && cmdValueNode.Kind == yaml.MappingNode {
+						cmdName := cmdNameNode.Value
 						var cmdTemplate CommandTemplate
-						for k := 0; k < len(cmdNode.Content); k += 2 {
-							if cmdNode.Content[k].Kind == yaml.ScalarNode {
-								fieldName := cmdNode.Content[k].Value
-								if fieldName == "template" && k+1 < len(cmdNode.Content) {
-									cmdTemplate.Template = cmdNode.Content[k+1].Value
-								} else if fieldName == "description" && k+1 < len(cmdNode.Content) {
-									cmdTemplate.Description = cmdNode.Content[k+1].Value
-								} else if fieldName == "ignore_target" && k+1 < len(cmdNode.Content) {
-									cmdTemplate.IgnoreTarget = cmdNode.Content[k+1].Value == "true"
-								} else if fieldName == "maxmium_queue" && k+1 < len(cmdNode.Content) {
-									fmt.Sscanf(cmdNode.Content[k+1].Value, "%d", &cmdTemplate.MaximumQueue)
-								} else if fieldName != "" && cmdName == "" {
-									cmdName = fieldName
-								}
+
+						// Parse command properties
+						for k := 0; k < len(cmdValueNode.Content); k += 2 {
+							propKey := cmdValueNode.Content[k].Value
+							propValue := cmdValueNode.Content[k+1]
+
+							switch propKey {
+							case "template":
+								cmdTemplate.Template = propValue.Value
+							case "description":
+								cmdTemplate.Description = propValue.Value
+							case "ignore_target":
+								cmdTemplate.IgnoreTarget = propValue.Value == "true"
+							case "maxmium_queue":
+								fmt.Sscanf(propValue.Value, "%d", &cmdTemplate.MaximumQueue)
 							}
 						}
-						if cmdName != "" {
-							*commands = append(*commands, commandWithLine{
-								Name:    cmdName,
-								Line:    cmdNode.Line,
-								Command: cmdTemplate,
-							})
-						}
+
+						*commands = append(*commands, commandWithLine{
+							Name:    cmdName,
+							Line:    cmdNameNode.Line,
+							Command: cmdTemplate,
+						})
 					}
 				}
 				return
 			}
 		}
-
-		extractCommandsFromNode(child, commands)
 	}
 }
 

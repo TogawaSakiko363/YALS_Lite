@@ -9,12 +9,18 @@ body {
     background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
     min-height: 100vh;
     color: #e0e0e0;
+    padding-bottom: 100px; /* Reserve space for fixed footer */
 }
 
 .container {
     max-width: 1400px;
     margin: 0 auto;
     padding: 20px;
+}
+
+/* Main content container needs extra bottom padding */
+body > .container {
+    padding-bottom: 120px; /* Extra padding for footer on mobile */
 }
 
 header {
@@ -216,6 +222,11 @@ header .container {
     box-shadow: 0 0 0 3px rgba(0, 212, 255, 0.1);
 }
 
+.input-field:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
 .input-field::placeholder {
     color: #666;
 }
@@ -253,12 +264,17 @@ header .container {
     gap: 4px;
 }
 
-.command-btn:hover {
+.command-btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
+.command-btn:not(:disabled):hover {
     background: rgba(0, 212, 255, 0.1);
     border-color: rgba(0, 212, 255, 0.3);
 }
 
-.command-btn.selected {
+.command-btn.selected:not(:disabled) {
     background: rgba(0, 212, 255, 0.2);
     border-color: #00d4ff;
 }
@@ -465,6 +481,14 @@ header .container {
 }
 
 @media (max-width: 600px) {
+    body {
+        padding-bottom: 120px; /* More space for footer on mobile */
+    }
+
+    body > .container {
+        padding-bottom: 140px; /* Extra padding for mobile */
+    }
+
     .input-row {
         flex-direction: column;
         align-items: stretch;

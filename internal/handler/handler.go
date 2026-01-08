@@ -28,9 +28,7 @@ type Handler struct {
 	clientSessions  map[*websocket.Conn]string
 	sessionConns    map[string]*websocket.Conn
 	commandSessions map[string]string
-	activeCommands  map[string]chan bool
 	clientsLock     sync.RWMutex
-	commandsLock    sync.RWMutex
 	pingInterval    time.Duration
 	pongWait        time.Duration
 	webDir          string
@@ -128,7 +126,6 @@ func NewHandler(serverInstance *config.ServerInfo, executor *executor.Executor, 
 		clientSessions:  make(map[*websocket.Conn]string),
 		sessionConns:    make(map[string]*websocket.Conn),
 		commandSessions: make(map[string]string),
-		activeCommands:  make(map[string]chan bool),
 		pingInterval:    pingInterval,
 		pongWait:        pongWait,
 		rateLimiter:     rateLimiter,
@@ -183,7 +180,7 @@ func (h *Handler) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if sessionID == "" {
-		sessionID = h.generateSessionID(clientIP)
+		sessionID = h.generateSessionID()
 	}
 
 	conn, err := h.upgrader.Upgrade(w, r, nil)
@@ -221,8 +218,7 @@ func (h *Handler) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) handleGetSession(w http.ResponseWriter, r *http.Request) {
-	clientIP := h.getRealIP(r)
-	sessionID := h.generateSessionID(clientIP)
+	sessionID := h.generateSessionID()
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
@@ -261,9 +257,10 @@ func GenerateRandomString(length int) string {
 	return string(b)
 }
 
-func (h *Handler) generateSessionID(clientIP string) string {
+func (h *Handler) generateSessionID() string {
+	timestamp := time.Now().UnixMilli() // Get millisecond timestamp
 	randomStr := GenerateRandomString(10)
-	return fmt.Sprintf("session_%s", randomStr)
+	return fmt.Sprintf("session_%d_%s", timestamp, randomStr)
 }
 
 func (h *Handler) pingClient(conn *websocket.Conn) {
@@ -381,6 +378,10 @@ func (h *Handler) handleCommand(conn *websocket.Conn, req CommandRequest, client
 
 	logger.Infof("Client [%s] sent run signal for command: %s", clientIP, commandID)
 
+	// Send command_id immediately to frontend
+	resp.Success = true
+	h.sendStreamingResponse(conn, resp, false, commandID, "replace", false)
+
 	for output := range outputChan {
 		if output.IsStopped {
 			stoppedResp := h.createCommandResponse(req, true)
@@ -389,18 +390,29 @@ func (h *Handler) handleCommand(conn *websocket.Conn, req CommandRequest, client
 			break
 		}
 
+		if output.IsComplete {
+			// Send completion message even if there's no output
+			if output.Output != "" {
+				resp.Success = true
+				resp.Output = output.Output
+				h.sendStreamingResponse(conn, resp, true, commandID, "replace", false)
+			} else {
+				// Send empty completion message
+				resp.Success = true
+				resp.Output = ""
+				h.sendStreamingResponse(conn, resp, true, commandID, "replace", false)
+			}
+			break
+		}
+
 		if output.IsError && output.Output != "" {
 			resp.Success = false
 			resp.Error = output.Output
-			h.sendStreamingResponse(conn, resp, output.IsComplete, commandID, "replace", false)
-		} else {
+			h.sendStreamingResponse(conn, resp, false, commandID, "replace", false)
+		} else if output.Output != "" {
 			resp.Success = true
 			resp.Output = output.Output
-			h.sendStreamingResponse(conn, resp, output.IsComplete, commandID, "replace", false)
-		}
-
-		if output.IsComplete {
-			break
+			h.sendStreamingResponse(conn, resp, false, commandID, "replace", false)
 		}
 	}
 }
@@ -519,30 +531,6 @@ func (h *Handler) createCommandResponse(req CommandRequest, success bool) Comman
 		Command: req.Command,
 		Target:  req.Target,
 	}
-}
-
-func (h *Handler) setActiveCommand(commandID string, stopChan chan bool) {
-	h.commandsLock.Lock()
-	h.activeCommands[commandID] = stopChan
-	h.commandsLock.Unlock()
-}
-
-func (h *Handler) removeActiveCommand(commandID string) {
-	h.commandsLock.Lock()
-	delete(h.activeCommands, commandID)
-	h.commandsLock.Unlock()
-}
-
-func (h *Handler) stopActiveCommand(commandID string) bool {
-	h.commandsLock.Lock()
-	defer h.commandsLock.Unlock()
-
-	if stopChan, exists := h.activeCommands[commandID]; exists {
-		close(stopChan)
-		delete(h.activeCommands, commandID)
-		return true
-	}
-	return false
 }
 
 func (rl *RateLimiter) checkRateLimit(sessionID string) bool {

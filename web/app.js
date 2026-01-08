@@ -29,13 +29,18 @@ class YALSClient {
     }
 
     async initWebSocket() {
-        try {
-            const response = await fetch('/api/session');
-            const data = await response.json();
-            this.currentSessionID = data.session_id;
-        } catch (error) {
-            console.error('Failed to get session ID:', error);
-            return;
+        // Only get session ID if we don't have one yet
+        if (!this.currentSessionID) {
+            try {
+                const response = await fetch('/api/session');
+                const data = await response.json();
+                this.currentSessionID = data.session_id;
+            } catch (error) {
+                console.error('Failed to get session ID:', error);
+                // If we can't get session ID, schedule reconnect
+                this.scheduleReconnect();
+                return;
+            }
         }
 
         const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -74,9 +79,13 @@ class YALSClient {
         if (this.reconnectAttempts < this.maxReconnectAttempts) {
             this.reconnectAttempts++;
             this.statusText.textContent = `Reconnecting (${this.reconnectAttempts}/${this.maxReconnectAttempts})...`;
-            setTimeout(() => this.initWebSocket(), this.reconnectDelay);
+            setTimeout(() => {
+                // Try to reconnect with existing session ID first
+                this.initWebSocket();
+            }, this.reconnectDelay);
         } else {
             this.statusText.textContent = 'Connection failed. Please refresh the page.';
+            this.currentSessionID = null; // Reset session ID for next attempt
         }
     }
 
@@ -163,6 +172,13 @@ class YALSClient {
 
         this.targetInput.addEventListener('input', () => this.updateExecuteButton());
 
+        // Add Enter key support for target input
+        this.targetInput.addEventListener('keypress', (e) => {
+            if (e.key === 'Enter' && !this.executeBtn.disabled) {
+                this.executeCommand();
+            }
+        });
+
         this.executeBtn.addEventListener('click', () => this.executeCommand());
         this.stopBtn.addEventListener('click', () => this.stopCommand());
     }
@@ -213,7 +229,10 @@ class YALSClient {
 
         this.isRunning = true;
         this.executeBtn.disabled = true;
-        this.stopBtn.disabled = false;
+        this.stopBtn.disabled = true; // Keep disabled until we get command_id
+        this.targetInput.disabled = true; // Disable target input during execution
+        this.disableCommandButtons(); // Disable command selection during execution
+        this.currentCommandId = null; // Reset command ID
         this.rateLimitInfo.style.display = 'none';
 
         this.appendOutput(`<span class="command-line">$ ${this.selectedCommand}${target ? ' ' + target : ''}</span>\n`, 'normal');
@@ -226,17 +245,33 @@ class YALSClient {
     }
 
     stopCommand() {
+        if (!this.currentCommandId) {
+            console.warn('Cannot stop command: command_id not available yet');
+            return;
+        }
+
         this.sendMessage({
             type: 'stop_command',
-            command_id: this.currentCommandId || ''
+            command_id: this.currentCommandId
         });
+
+        // Disable stop button immediately after sending stop signal
+        this.stopBtn.disabled = true;
     }
 
     handleCommandOutput(data) {
+        // Set command ID and enable stop button as soon as we receive it
+        if (data.command_id && !this.currentCommandId) {
+            this.currentCommandId = data.command_id;
+            this.stopBtn.disabled = false; // Enable stop button once we have command_id
+        }
+
         if (data.is_complete) {
             this.isRunning = false;
             this.executeBtn.disabled = false;
             this.stopBtn.disabled = true;
+            this.targetInput.disabled = false; // Re-enable target input
+            this.enableCommandButtons(); // Re-enable command selection
             this.currentCommandId = null;
         }
 
@@ -244,10 +279,6 @@ class YALSClient {
             this.appendOutput(`Error: ${this.escapeHtml(data.error)}\n`, 'error');
         } else if (data.output) {
             this.appendOutput(this.escapeHtml(data.output), 'normal');
-        }
-
-        if (data.command_id && !this.currentCommandId) {
-            this.currentCommandId = data.command_id;
         }
     }
 
@@ -266,6 +297,22 @@ class YALSClient {
 
     clearTerminal() {
         this.terminalBody.innerHTML = '';
+    }
+
+    disableCommandButtons() {
+        document.querySelectorAll('.command-btn').forEach(btn => {
+            btn.disabled = true;
+            btn.style.opacity = '0.5';
+            btn.style.cursor = 'not-allowed';
+        });
+    }
+
+    enableCommandButtons() {
+        document.querySelectorAll('.command-btn').forEach(btn => {
+            btn.disabled = false;
+            btn.style.opacity = '';
+            btn.style.cursor = 'pointer';
+        });
     }
 
     escapeHtml(text) {
