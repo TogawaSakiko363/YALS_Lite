@@ -1,0 +1,38 @@
+# YALS Configuration
+
+# Listen settings
+listen:
+  host: "0.0.0.0"
+  port: 8080
+  log_level: "info"
+  tls: false
+  tls_cert_file: "./cert.pem"
+  tls_key_file: "./key.pem"
+
+# Rate limiting settings
+rate_limit:
+  enabled: true
+  max_commands: 10
+  time_window: 60
+
+# Info settings
+info:
+  name: "Node A"
+  location: "Earth"
+  datacenter: "DEEPDARK 1"
+  test_ip: "127.0.0.1"
+  description: "High-quality network with 114514Gbps bandwidth"
+
+commands:
+  ping:
+    template: "ping -c 4"
+    description: "Ping test"
+    ignore_target: false
+  traceroute:
+    template: "traceroute"
+    description: "traceroute tool"
+    ignore_target: false
+  uname:
+    template: "uname -a"
+    description: "System information"
+    ignore_target: true

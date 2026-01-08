@@ -1,0 +1,107 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Yet Another Looking Glass</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <header>
+        <div class="container">
+            <div class="logo">Looking Glass</div>
+            <div class="connection-status">
+                <div class="status-dot" id="statusDot"></div>
+                <span id="statusText">Connecting...</span>
+            </div>
+        </div>
+    </header>
+
+    <div class="container">
+        <div class="main-grid">
+            <aside>
+                <div class="card">
+                    <div class="card-header">
+                        <h2>Host Information</h2>
+                    </div>
+                    <div class="card-body">
+                        <div class="host-info" id="hostInfo">
+                            <div class="loading">
+                                <div class="spinner"></div>
+                                Loading...
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </aside>
+
+            <main>
+                <div class="card">
+                    <div class="card-header">
+                        <h2>Command Execution</h2>
+                    </div>
+                    <div class="card-body">
+                        <div class="input-section">
+                            <div class="input-group">
+                                <label class="input-label">Select Command</label>
+                                <div class="command-selector" id="commandSelector">
+                                    <div class="loading">
+                                        <div class="spinner"></div>
+                                        Loading commands...
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="input-group">
+                                <label class="input-label">Target</label>
+                                <div class="input-row">
+                                    <input type="text" class="input-field" id="targetInput" placeholder="Enter IP address or domain name">
+                                    <button class="btn btn-primary" id="executeBtn" disabled>
+                                        &#x25B6; Execute
+                                    </button>
+                                    <button class="btn btn-danger" id="stopBtn" disabled>
+                                        &#x23F9; Stop
+                                    </button>
+                                </div>
+                            </div>
+                            <div class="rate-limit-info" id="rateLimitInfo" style="display: none;">
+                                Rate limit active. Please wait before executing another command.
+                            </div>
+                        </div>
+
+                        <div class="terminal">
+                            <div class="terminal-header">
+                                <span class="terminal-btn red"></span>
+                                <span class="terminal-btn yellow"></span>
+                                <span class="terminal-btn green"></span>
+                                <span class="terminal-title">Terminal</span>
+                            </div>
+                            <div class="terminal-body" id="terminalBody">
+                                <div class="empty-state">
+                                    <div class="icon">&#x1F4A1;</div>
+                                    <p>Select a command and enter a target to begin</p>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </main>
+        </div>
+
+        <footer class="site-footer">
+            <div class="footer-content">
+                <a href="https://github.com/TogawaSakiko363/YALS_Lite" target="_blank" class="footer-link">
+                    <span class="github-icon">
+                        <svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor">
+                            <path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0024 12c0-6.63-5.37-12-12-12z"/>
+                        </svg>
+                    </span>
+                    Powered by YALS
+                </a>
+                <div class="footer-version" id="footerVersion"></div>
+            </div>
+        </footer>
+    </div>
+
+    <script src="app.js"></script>
+</body>
+</html>
