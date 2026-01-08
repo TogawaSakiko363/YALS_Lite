@@ -1,9 +1,12 @@
 package validator
 
 import (
+	"YALS/internal/dns"
+	"context"
 	"net"
 	"regexp"
 	"strings"
+	"time"
 )
 
 // CommandDetail represents a command with its description
@@ -66,6 +69,15 @@ func ValidateInput(input string) InputType {
 	}
 
 	return InvalidInput
+}
+
+// ResolveDomain resolves a domain name to IP addresses using the DNS resolver
+func ResolveDomain(domain string) ([]net.IP, error) {
+	resolver := dns.GetResolver()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	return resolver.Resolve(ctx, domain)
 }
 
 // extractHostPort extracts host and port from input

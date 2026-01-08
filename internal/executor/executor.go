@@ -2,6 +2,7 @@ package executor
 
 import (
 	"YALS/internal/config"
+	"YALS/internal/validator"
 	"bufio"
 	"fmt"
 	"os/exec"
@@ -51,9 +52,54 @@ func (e *Executor) Execute(commandName, target, sessionID string, outputChan cha
 		return ""
 	}
 
-	fullCommand := cmdConfig.Template
+	// Resolve domain to IP if target is a domain name
+	resolvedTarget := target
 	if target != "" && !cmdConfig.IgnoreTarget {
-		fullCommand = cmdConfig.Template + " " + target
+		inputType := validator.ValidateInput(target)
+		if inputType == validator.Domain {
+			// Extract host without port
+			host, port := extractHostPort(target)
+
+			// Resolve domain to IP
+			ips, err := validator.ResolveDomain(host)
+			if err != nil {
+				outputChan <- Output{
+					Error:      fmt.Sprintf("Failed to resolve domain %s: %v", host, err),
+					IsComplete: true,
+					IsError:    true,
+				}
+				return ""
+			}
+
+			if len(ips) == 0 {
+				outputChan <- Output{
+					Error:      fmt.Sprintf("No IP addresses found for domain: %s", host),
+					IsComplete: true,
+					IsError:    true,
+				}
+				return ""
+			}
+
+			// Use the first resolved IP
+			resolvedIP := ips[0].String()
+
+			// Reconstruct target with IP and port if present
+			if port != "" {
+				// Check if it's IPv6 (needs brackets with port)
+				if strings.Contains(resolvedIP, ":") {
+					resolvedTarget = fmt.Sprintf("[%s]:%s", resolvedIP, port)
+				} else {
+					resolvedTarget = fmt.Sprintf("%s:%s", resolvedIP, port)
+				}
+			} else {
+				resolvedTarget = resolvedIP
+			}
+		}
+	}
+
+	fullCommand := cmdConfig.Template
+	if resolvedTarget != "" && !cmdConfig.IgnoreTarget {
+		fullCommand = cmdConfig.Template + " " + resolvedTarget
 	}
 
 	commandID := generateCommandID(commandName, target, sessionID)
@@ -64,6 +110,36 @@ func (e *Executor) Execute(commandName, target, sessionID string, outputChan cha
 	go e.runCommand(commandID, fullCommand, stopChan, outputChan)
 
 	return commandID
+}
+
+// extractHostPort extracts host and port from target string
+func extractHostPort(target string) (host, port string) {
+	// Check for IPv6 with port: [2001:db8::1]:8080
+	if strings.HasPrefix(target, "[") {
+		closeBracket := strings.Index(target, "]")
+		if closeBracket == -1 {
+			return target, ""
+		}
+		host = target[1:closeBracket]
+		if len(target) > closeBracket+1 && target[closeBracket+1] == ':' {
+			port = target[closeBracket+2:]
+		}
+		return host, port
+	}
+
+	// Check for port
+	lastColon := strings.LastIndex(target, ":")
+	if lastColon == -1 {
+		return target, ""
+	}
+
+	// Check if it's IPv6 without port
+	if strings.Count(target, ":") > 1 {
+		return target, ""
+	}
+
+	// IPv4 or domain with port
+	return target[:lastColon], target[lastColon+1:]
 }
 
 func (e *Executor) runCommand(commandID, fullCommand string, stopChan <-chan bool, outputChan chan<- Output) {

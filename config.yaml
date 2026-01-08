@@ -29,7 +29,7 @@ commands:
     description: "ICMP Ping test"
     ignore_target: false
   nexttrace:
-    template: "nexttrace -4eMC"
+    template: "nexttrace -eMC"
     description: "Super traceroute"
     ignore_target: false
   uname:
