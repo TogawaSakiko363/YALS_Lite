@@ -42,6 +42,11 @@ func NewExecutor(cfg *config.Config) *Executor {
 }
 
 func (e *Executor) Execute(commandName, target, sessionID string, outputChan chan<- Output) string {
+	return e.ExecuteWithIPVersion(commandName, target, sessionID, "auto", outputChan)
+}
+
+// ExecuteWithIPVersion executes a command with IP version preference
+func (e *Executor) ExecuteWithIPVersion(commandName, target, sessionID, ipVersion string, outputChan chan<- Output) string {
 	cmdConfig, exists := e.config.Commands[commandName]
 	if !exists {
 		outputChan <- Output{
@@ -60,8 +65,19 @@ func (e *Executor) Execute(commandName, target, sessionID string, outputChan cha
 			// Extract host without port
 			host, port := extractHostPort(target)
 
+			// Determine IP version
+			var version validator.IPVersion
+			switch ipVersion {
+			case "ipv4":
+				version = validator.IPVersionIPv4
+			case "ipv6":
+				version = validator.IPVersionIPv6
+			default:
+				version = validator.IPVersionAuto
+			}
+
 			// Resolve domain to IP
-			ips, err := validator.ResolveDomain(host)
+			ips, err := validator.ResolveDomainWithVersion(host, version)
 			if err != nil {
 				outputChan <- Output{
 					Error:      fmt.Sprintf("Failed to resolve domain %s: %v", host, err),
@@ -94,6 +110,7 @@ func (e *Executor) Execute(commandName, target, sessionID string, outputChan cha
 			} else {
 				resolvedTarget = resolvedIP
 			}
+
 		}
 	}
 

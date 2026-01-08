@@ -53,6 +53,7 @@ type CommandRequest struct {
 	Command   string `json:"command,omitempty"`
 	Target    string `json:"target,omitempty"`
 	CommandID string `json:"command_id,omitempty"`
+	IPVersion string `json:"ip_version,omitempty"` // "auto", "ipv4", "ipv6"
 }
 
 type CommandResponse struct {
@@ -357,7 +358,14 @@ func (h *Handler) handleCommand(conn *websocket.Conn, req CommandRequest, client
 	}
 
 	outputChan := make(chan executor.Output, 100)
-	commandID := h.executor.Execute(req.Command, req.Target, sessionID, outputChan)
+
+	// Use IP version from request, default to "auto"
+	ipVersion := req.IPVersion
+	if ipVersion == "" {
+		ipVersion = "auto"
+	}
+
+	commandID := h.executor.ExecuteWithIPVersion(req.Command, req.Target, sessionID, ipVersion, outputChan)
 
 	if commandID == "" {
 		resp.Success = false

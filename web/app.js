@@ -20,6 +20,7 @@ class YALSClient {
         this.hostInfo = document.getElementById('hostInfo');
         this.commandSelector = document.getElementById('commandSelector');
         this.targetInput = document.getElementById('targetInput');
+        this.ipVersionSelect = document.getElementById('ipVersionSelect');
         this.executeBtn = document.getElementById('executeBtn');
         this.stopBtn = document.getElementById('stopBtn');
         this.terminalBody = document.getElementById('terminalBody');
@@ -231,6 +232,7 @@ class YALSClient {
         this.executeBtn.disabled = true;
         this.stopBtn.disabled = true; // Keep disabled until we get command_id
         this.targetInput.disabled = true; // Disable target input during execution
+        this.ipVersionSelect.disabled = true; // Disable IP version select during execution
         this.disableCommandButtons(); // Disable command selection during execution
         this.currentCommandId = null; // Reset command ID
         this.rateLimitInfo.style.display = 'none';
@@ -240,7 +242,8 @@ class YALSClient {
         this.sendMessage({
             type: 'execute_command',
             command: this.selectedCommand,
-            target: target || ''
+            target: target || '',
+            ip_version: this.ipVersionSelect.value
         });
     }
 
@@ -271,6 +274,7 @@ class YALSClient {
             this.executeBtn.disabled = false;
             this.stopBtn.disabled = true;
             this.targetInput.disabled = false; // Re-enable target input
+            this.ipVersionSelect.disabled = false; // Re-enable IP version select
             this.enableCommandButtons(); // Re-enable command selection
             this.currentCommandId = null;
         }
