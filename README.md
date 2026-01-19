@@ -8,7 +8,7 @@
 - 🎨 **Modern UI** - Clean, responsive interface with real-time output
 - 🔒 **Rate Limiting** - Built-in protection against abuse
 - 🌐 **IPv4 & IPv6** - Full support for both protocols
-- ⚡ **Real-time Streaming** - Live command output via WebSocket
+- ⚡ **Real-time Streaming** - Live command output via SSE
 - 🛑 **Command Control** - Stop running commands anytime
 - 📱 **Mobile Friendly** - Responsive design for all devices
 
@@ -190,4 +190,4 @@ For issues and questions, please open an issue on GitHub.
 
 ---
 
-**Made with ❤️ by the YALS Team**
+**Star ⭐ this repository if you find it helpful!**
