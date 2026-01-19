@@ -157,7 +157,8 @@ YALS_Lite/
 ├── internal/
 │   ├── config/           # Configuration management
 │   ├── executor/         # Command execution
-│   ├── handler/          # HTTP/WebSocket handlers
+│   ├── handler/          # HTTP handlers
+|   ├── dns/              # DNS lookup
 │   ├── logger/           # Logging utilities
 │   ├── utils/            # Helper functions
 │   └── validator/        # Input validation
