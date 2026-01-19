@@ -15,24 +15,15 @@ import (
 	"YALS/internal/logger"
 	"YALS/internal/utils"
 	"YALS/internal/validator"
-
-	"github.com/gorilla/websocket"
 )
 
 type Handler struct {
-	server          *config.ServerInfo
-	executor        *executor.Executor
-	upgrader        websocket.Upgrader
-	clients         map[*websocket.Conn]bool
-	clientIPs       map[*websocket.Conn]string
-	clientSessions  map[*websocket.Conn]string
-	sessionConns    map[string]*websocket.Conn
-	commandSessions map[string]string
-	clientsLock     sync.RWMutex
-	pingInterval    time.Duration
-	pongWait        time.Duration
-	webDir          string
-	rateLimiter     *RateLimiter
+	server         *config.ServerInfo
+	executor       *executor.Executor
+	activeCommands map[string]chan bool
+	commandsLock   sync.RWMutex
+	webDir         string
+	rateLimiter    *RateLimiter
 }
 
 type RateLimiter struct {
@@ -49,16 +40,16 @@ type SessionRateLimit struct {
 
 type CommandRequest struct {
 	Type      string `json:"type"`
-	Host      string `json:"host,omitempty"`
+	Agent     string `json:"agent,omitempty"`
 	Command   string `json:"command,omitempty"`
 	Target    string `json:"target,omitempty"`
 	CommandID string `json:"command_id,omitempty"`
-	IPVersion string `json:"ip_version,omitempty"` // "auto", "ipv4", "ipv6"
+	IPVersion string `json:"ip_version,omitempty"`
 }
 
 type CommandResponse struct {
 	Success bool   `json:"success"`
-	Host    string `json:"host"`
+	Agent   string `json:"agent"`
 	Command string `json:"command"`
 	Target  string `json:"target"`
 	Output  string `json:"output"`
@@ -68,7 +59,7 @@ type CommandResponse struct {
 type StreamingCommandResponse struct {
 	Type       string `json:"type"`
 	Success    bool   `json:"success"`
-	Host       string `json:"host"`
+	Agent      string `json:"agent"`
 	Command    string `json:"command"`
 	Target     string `json:"target"`
 	Output     string `json:"output"`
@@ -84,10 +75,7 @@ type CommandsListResponse struct {
 
 type CommandTemplate struct {
 	Name         string `json:"name"`
-	Template     string `json:"template"`
-	Description  string `json:"description"`
 	IgnoreTarget bool   `json:"ignore_target"`
-	MaximumQueue int    `json:"maximum_queue"`
 }
 
 type AppConfigResponse struct {
@@ -97,9 +85,26 @@ type AppConfigResponse struct {
 	Commands []CommandTemplate      `json:"commands"`
 }
 
-type SessionIDResponse struct {
-	Type      string `json:"type"`
+type SessionResponse struct {
 	SessionID string `json:"session_id"`
+}
+
+type NodeResponse struct {
+	Version     string           `json:"version"`
+	TotalNodes  int              `json:"total_nodes"`
+	OnlineNodes int              `json:"online_nodes"`
+	Groups      []map[string]any `json:"groups"`
+}
+
+type ExecRequest struct {
+	Agent     string `json:"agent"`
+	Command   string `json:"command"`
+	Target    string `json:"target"`
+	IPVersion string `json:"ip_version"`
+}
+
+type StopRequest struct {
+	CommandID string `json:"command_id"`
 }
 
 func NewHandler(serverInstance *config.ServerInfo, executor *executor.Executor, pingInterval, pongWait time.Duration) *Handler {
@@ -113,23 +118,10 @@ func NewHandler(serverInstance *config.ServerInfo, executor *executor.Executor, 
 	}
 
 	return &Handler{
-		server:   serverInstance,
-		executor: executor,
-		upgrader: websocket.Upgrader{
-			ReadBufferSize:  65536,
-			WriteBufferSize: 65536,
-			CheckOrigin: func(r *http.Request) bool {
-				return true
-			},
-		},
-		clients:         make(map[*websocket.Conn]bool),
-		clientIPs:       make(map[*websocket.Conn]string),
-		clientSessions:  make(map[*websocket.Conn]string),
-		sessionConns:    make(map[string]*websocket.Conn),
-		commandSessions: make(map[string]string),
-		pingInterval:    pingInterval,
-		pongWait:        pongWait,
-		rateLimiter:     rateLimiter,
+		server:         serverInstance,
+		executor:       executor,
+		activeCommands: make(map[string]chan bool),
+		rateLimiter:    rateLimiter,
 	}
 }
 
@@ -138,7 +130,9 @@ func (h *Handler) SetupRoutes(mux *http.ServeMux, webDir string) {
 
 	mux.HandleFunc("/", h.handleIndex)
 	mux.HandleFunc("/api/session", h.handleGetSession)
-	mux.HandleFunc("/ws/", h.handleWebSocket)
+	mux.HandleFunc("/api/node", h.handleGetNodes)
+	mux.HandleFunc("/api/exec", h.handleExecCommand)
+	mux.HandleFunc("/api/stop", h.handleStopCommand)
 
 	fs := http.FileServer(http.Dir(webDir))
 	mux.Handle("/assets/", fs)
@@ -168,67 +162,256 @@ func (h *Handler) handleIndex(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func (h *Handler) handleWebSocket(w http.ResponseWriter, r *http.Request) {
-	clientIP := h.getRealIP(r)
-
-	var sessionID string
-	path := strings.TrimPrefix(r.URL.Path, "/ws/")
-
-	if path != "" && path != r.URL.Path {
-		sessionID = path
-	} else {
-		sessionID = r.URL.Query().Get("sessionId")
-	}
-
-	if sessionID == "" {
-		sessionID = h.generateSessionID()
-	}
-
-	conn, err := h.upgrader.Upgrade(w, r, nil)
-	if err != nil {
-		logger.Errorf("Failed to upgrade connection: %v", err)
-		return
-	}
-
-	h.clientsLock.Lock()
-	h.clients[conn] = true
-	h.clientIPs[conn] = clientIP
-	h.clientSessions[conn] = sessionID
-	h.sessionConns[sessionID] = conn
-	h.clientsLock.Unlock()
-
-	conn.SetReadLimit(32768)
-	conn.SetReadDeadline(time.Now().Add(h.pongWait))
-	conn.SetPongHandler(func(string) error {
-		conn.SetReadDeadline(time.Now().Add(h.pongWait))
-		return nil
-	})
-
-	sessionResponse := SessionIDResponse{
-		Type:      "session_id",
-		SessionID: sessionID,
-	}
-	if err := conn.WriteJSON(sessionResponse); err != nil {
-		logger.Errorf("Failed to send session ID: %v", err)
-		conn.Close()
-		return
-	}
-
-	go h.pingClient(conn)
-	go h.readPump(conn, clientIP)
-}
-
 func (h *Handler) handleGetSession(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
 	sessionID := h.generateSessionID()
 
 	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
+	w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
 
-	response := SessionIDResponse{
-		Type:      "session_id",
+	response := SessionResponse{
 		SessionID: sessionID,
 	}
-	json.NewEncoder(w).Encode(response)
+
+	if err := json.NewEncoder(w).Encode(response); err != nil {
+		logger.Errorf("Failed to encode session response: %v", err)
+		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		return
+	}
+}
+
+func (h *Handler) handleGetNodes(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	sessionID := r.URL.Query().Get("session_id")
+	if !h.validateSessionID(sessionID) {
+		http.Error(w, "Invalid or missing session_id", http.StatusUnauthorized)
+		return
+	}
+
+	commands := h.server.GetCommands()
+	commandsSlice := make([]CommandTemplate, 0, len(commands))
+	for _, cmd := range commands {
+		commandsSlice = append(commandsSlice, CommandTemplate{
+			Name:         cmd.Name,
+			IgnoreTarget: cmd.IgnoreTarget,
+		})
+	}
+
+	info := h.server.GetInfo()
+
+	response := AppConfigResponse{
+		Type:     "app_config",
+		Version:  utils.GetAppVersion(),
+		Host:     info,
+		Commands: commandsSlice,
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
+
+	if err := json.NewEncoder(w).Encode(response); err != nil {
+		logger.Errorf("Failed to encode nodes response: %v", err)
+		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		return
+	}
+}
+
+func (h *Handler) handleExecCommand(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	sessionID := r.URL.Query().Get("session_id")
+	if !h.validateSessionID(sessionID) {
+		http.Error(w, "Invalid or missing session_id", http.StatusUnauthorized)
+		return
+	}
+
+	var req ExecRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "Invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	clientIP := h.getRealIP(r)
+
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
+	w.Header().Set("Connection", "keep-alive")
+	w.Header().Set("X-Accel-Buffering", "no")
+
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		http.Error(w, "Streaming not supported", http.StatusInternalServerError)
+		return
+	}
+
+	if !h.rateLimiter.checkRateLimit(sessionID) {
+		remaining := h.rateLimiter.getRemainingTime(sessionID)
+		errorMsg := fmt.Sprintf("Rate limit exceeded. Please wait %d seconds before trying again.", int(remaining.Seconds())+1)
+		h.sendSSEError(w, flusher, errorMsg)
+		logger.Warnf("Client [%s] rate limit exceeded for session: %s", clientIP, sessionID)
+		return
+	}
+
+	cmdConfig, exists := h.server.GetCommandConfig(req.Command)
+	if !exists {
+		h.sendSSEError(w, flusher, "Command not found: "+req.Command)
+		return
+	}
+
+	if !cmdConfig.IgnoreTarget {
+		inputType := validator.ValidateInput(req.Target)
+		if inputType == validator.InvalidInput {
+			h.sendSSEError(w, flusher, "Invalid target: must be an IP address or domain name")
+			return
+		}
+	}
+
+	ipVersion := req.IPVersion
+	if ipVersion == "" {
+		ipVersion = "auto"
+	}
+
+	outputChan := make(chan executor.Output, 100)
+	commandID := h.executor.ExecuteWithIPVersion(req.Command, req.Target, sessionID, ipVersion, outputChan)
+
+	if commandID == "" {
+		h.sendSSEError(w, flusher, "Failed to execute command")
+		return
+	}
+
+	stopChan := make(chan bool, 1)
+	h.setActiveCommand(commandID, stopChan)
+	defer h.removeActiveCommand(commandID)
+
+	logger.Infof("Client [%s] executing command: %s", clientIP, commandID)
+
+	h.sendSSEMessage(w, flusher, map[string]any{
+		"type":       "output",
+		"command_id": commandID,
+		"success":    true,
+	})
+
+	for output := range outputChan {
+		if output.IsStopped {
+			h.sendSSEMessage(w, flusher, map[string]any{
+				"type":    "output",
+				"output":  "\n*** Stopped ***",
+				"stopped": true,
+			})
+			h.sendSSEMessage(w, flusher, map[string]any{
+				"type":    "complete",
+				"success": false,
+				"stopped": true,
+			})
+			break
+		}
+
+		if output.IsComplete {
+			if output.IsError {
+				h.sendSSEMessage(w, flusher, map[string]any{
+					"type":    "complete",
+					"success": false,
+					"error":   output.Error,
+				})
+			} else {
+				if output.Output != "" {
+					h.sendSSEMessage(w, flusher, map[string]any{
+						"type":   "output",
+						"output": output.Output,
+					})
+				}
+				h.sendSSEMessage(w, flusher, map[string]any{
+					"type":    "complete",
+					"success": true,
+				})
+			}
+			break
+		}
+
+		if output.IsError {
+			h.sendSSEMessage(w, flusher, map[string]any{
+				"type":  "error",
+				"error": output.Error,
+			})
+		} else {
+			h.sendSSEMessage(w, flusher, map[string]any{
+				"type":   "output",
+				"output": output.Output,
+			})
+		}
+	}
+}
+
+func (h *Handler) handleStopCommand(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	sessionID := r.URL.Query().Get("session_id")
+	if !h.validateSessionID(sessionID) {
+		http.Error(w, "Invalid or missing session_id", http.StatusUnauthorized)
+		return
+	}
+
+	var req StopRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "Invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	if req.CommandID == "" {
+		http.Error(w, "Missing command_id", http.StatusBadRequest)
+		return
+	}
+
+	clientIP := h.getRealIP(r)
+
+	if h.stopActiveCommand(req.CommandID) {
+		logger.Infof("Client [%s] sent stop signal for command: %s", clientIP, req.CommandID)
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{
+			"success": true,
+			"message": "Command stopped",
+		})
+	} else {
+		logger.Warnf("Client [%s] attempted to stop non-existent command: %s", clientIP, req.CommandID)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusNotFound)
+		json.NewEncoder(w).Encode(map[string]any{
+			"success": false,
+			"error":   "Command not found or already completed",
+		})
+	}
+}
+
+func (h *Handler) sendSSEMessage(w http.ResponseWriter, flusher http.Flusher, data map[string]any) {
+	jsonData, err := json.Marshal(data)
+	if err != nil {
+		logger.Errorf("Failed to marshal SSE message: %v", err)
+		return
+	}
+	fmt.Fprintf(w, "data: %s\n\n", jsonData)
+	flusher.Flush()
+}
+
+func (h *Handler) sendSSEError(w http.ResponseWriter, flusher http.Flusher, errorMsg string) {
+	h.sendSSEMessage(w, flusher, map[string]any{
+		"type":    "complete",
+		"success": false,
+		"error":   errorMsg,
+	})
 }
 
 func (h *Handler) getRealIP(r *http.Request) string {
@@ -248,314 +431,60 @@ func (h *Handler) getRealIP(r *http.Request) string {
 	return r.RemoteAddr
 }
 
-// GenerateRandomString generates a random alphanumeric string of specified length
 func GenerateRandomString(length int) string {
 	const charset = "abcdefghijklmnopqrstuvwxyz0123456789"
+
+	rng := rand.New(rand.NewSource(time.Now().UnixNano()))
+
 	b := make([]byte, length)
 	for i := range b {
-		b[i] = charset[rand.Intn(len(charset))]
+		b[i] = charset[rng.Intn(len(charset))]
 	}
 	return string(b)
 }
 
 func (h *Handler) generateSessionID() string {
-	timestamp := time.Now().UnixMilli() // Get millisecond timestamp
+	timestamp := time.Now().UnixMilli()
 	randomStr := GenerateRandomString(10)
 	return fmt.Sprintf("session_%d_%s", timestamp, randomStr)
 }
 
-func (h *Handler) pingClient(conn *websocket.Conn) {
-	ticker := time.NewTicker(h.pingInterval)
-	defer func() {
-		ticker.Stop()
-		conn.Close()
-
-		h.clientsLock.Lock()
-		sessionID := h.clientSessions[conn]
-		delete(h.clients, conn)
-		delete(h.clientIPs, conn)
-		delete(h.clientSessions, conn)
-		if sessionID != "" {
-			delete(h.sessionConns, sessionID)
-		}
-		h.clientsLock.Unlock()
-	}()
-
-	for range ticker.C {
-		if err := conn.WriteControl(websocket.PingMessage, []byte{}, time.Now().Add(10*time.Second)); err != nil {
-			return
-		}
+func (h *Handler) validateSessionID(sessionID string) bool {
+	if sessionID == "" {
+		return false
 	}
+	if !strings.HasPrefix(sessionID, "session_") {
+		return false
+	}
+	return true
 }
 
-func (h *Handler) readPump(conn *websocket.Conn, clientIP string) {
-	defer conn.Close()
-
-	for {
-		_, message, err := conn.ReadMessage()
-		if err != nil {
-			if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseAbnormalClosure) {
-				logger.Errorf("WebSocket error: %v", err)
-			}
-			break
-		}
-
-		var req CommandRequest
-		if err := json.Unmarshal(message, &req); err != nil {
-			logger.Errorf("Failed to parse command request: %v", err)
-			continue
-		}
-
-		logger.Debugf("Received message type: %s, CommandID: %s", req.Type, req.CommandID)
-
-		switch req.Type {
-		case "get_commands":
-			h.handleGetCommands(conn)
-		case "get_config":
-			h.handleGetConfig(conn)
-		case "execute_command":
-			go h.handleCommand(conn, req, clientIP)
-		case "stop_command":
-			h.handleStopCommand(req, clientIP)
-		default:
-			logger.Warnf("Unknown message type: %s", req.Type)
-		}
-	}
+func (h *Handler) setActiveCommand(commandID string, stopChan chan bool) {
+	h.commandsLock.Lock()
+	h.activeCommands[commandID] = stopChan
+	h.commandsLock.Unlock()
 }
 
-func (h *Handler) handleCommand(conn *websocket.Conn, req CommandRequest, clientIP string) {
-	resp := h.createCommandResponse(req, false)
-
-	h.clientsLock.RLock()
-	sessionID := h.clientSessions[conn]
-	h.clientsLock.RUnlock()
-
-	if !h.rateLimiter.checkRateLimit(sessionID) {
-		remaining := h.rateLimiter.getRemainingTime(sessionID)
-		resp.Success = false
-		resp.Error = fmt.Sprintf("Rate limit exceeded. Please wait %d seconds before trying again.", int(remaining.Seconds())+1)
-		h.sendStreamingResponse(conn, resp, true, "", "replace", false)
-		logger.Warnf("Client [%s] rate limit exceeded for session: %s", clientIP, sessionID)
-		return
-	}
-
-	cmdConfig, exists := h.server.GetCommandConfig(req.Command)
-	if !exists {
-		resp.Success = false
-		resp.Error = "Command not found: " + req.Command
-		h.sendStreamingResponse(conn, resp, true, "", "replace", false)
-		return
-	}
-
-	if !cmdConfig.IgnoreTarget {
-		inputType := validator.ValidateInput(req.Target)
-		if inputType == validator.InvalidInput {
-			resp.Success = false
-			resp.Error = "Invalid target: must be an IP address or domain name"
-			h.sendStreamingResponse(conn, resp, true, "", "replace", false)
-			return
-		}
-	}
-
-	outputChan := make(chan executor.Output, 100)
-
-	// Use IP version from request, default to "auto"
-	ipVersion := req.IPVersion
-	if ipVersion == "" {
-		ipVersion = "auto"
-	}
-
-	commandID := h.executor.ExecuteWithIPVersion(req.Command, req.Target, sessionID, ipVersion, outputChan)
-
-	if commandID == "" {
-		resp.Success = false
-		resp.Error = "Failed to execute command"
-		h.sendStreamingResponse(conn, resp, true, "", "replace", false)
-		return
-	}
-
-	h.clientsLock.Lock()
-	h.commandSessions[commandID] = sessionID
-	h.clientsLock.Unlock()
-
-	defer func() {
-		h.clientsLock.Lock()
-		delete(h.commandSessions, commandID)
-		h.clientsLock.Unlock()
-	}()
-
-	logger.Infof("Client [%s] sent run signal for command: %s", clientIP, commandID)
-
-	// Send command_id immediately to frontend
-	resp.Success = true
-	h.sendStreamingResponse(conn, resp, false, commandID, "replace", false)
-
-	for output := range outputChan {
-		if output.IsStopped {
-			stoppedResp := h.createCommandResponse(req, true)
-			stoppedResp.Output = "\n*** Stopped ***"
-			h.sendStreamingResponse(conn, stoppedResp, true, commandID, "append", true)
-			break
-		}
-
-		if output.IsComplete {
-			// Send completion message even if there's no output
-			if output.Output != "" {
-				resp.Success = true
-				resp.Output = output.Output
-				h.sendStreamingResponse(conn, resp, true, commandID, "replace", false)
-			} else {
-				// Send empty completion message
-				resp.Success = true
-				resp.Output = ""
-				h.sendStreamingResponse(conn, resp, true, commandID, "replace", false)
-			}
-			break
-		}
-
-		if output.IsError && output.Output != "" {
-			resp.Success = false
-			resp.Error = output.Output
-			h.sendStreamingResponse(conn, resp, false, commandID, "replace", false)
-		} else if output.Output != "" {
-			resp.Success = true
-			resp.Output = output.Output
-			h.sendStreamingResponse(conn, resp, false, commandID, "replace", false)
-		}
-	}
+func (h *Handler) removeActiveCommand(commandID string) {
+	h.commandsLock.Lock()
+	delete(h.activeCommands, commandID)
+	h.commandsLock.Unlock()
 }
 
-func (h *Handler) handleGetCommands(conn *websocket.Conn) {
-	commands := h.server.GetCommands()
-	response := CommandsListResponse{
-		Type:     "commands_list",
-		Commands: h.convertToCommandDetails(commands),
+func (h *Handler) stopActiveCommand(commandID string) bool {
+	h.commandsLock.Lock()
+	defer h.commandsLock.Unlock()
+
+	if stopChan, exists := h.activeCommands[commandID]; exists {
+		close(stopChan)
+		delete(h.activeCommands, commandID)
+		return true
 	}
-
-	data, err := json.Marshal(response)
-	if err != nil {
-		logger.Errorf("Failed to marshal commands: %v", err)
-		return
-	}
-
-	h.clientsLock.RLock()
-	defer h.clientsLock.RUnlock()
-
-	if _, ok := h.clients[conn]; ok {
-		conn.WriteMessage(websocket.TextMessage, data)
-	}
-}
-
-func (h *Handler) convertToCommandDetails(commands []config.CommandInfo) []validator.CommandDetail {
-	details := make([]validator.CommandDetail, len(commands))
-	for i, cmd := range commands {
-		details[i] = validator.CommandDetail{
-			Name:         cmd.Name,
-			Description:  cmd.Description,
-			IgnoreTarget: cmd.IgnoreTarget,
-		}
-	}
-	return details
-}
-
-func (h *Handler) handleGetConfig(conn *websocket.Conn) {
-	cfg := config.GetConfig()
-	if cfg == nil {
-		logger.Errorf("Configuration not available")
-		return
-	}
-
-	commands := h.server.GetCommands()
-
-	commandsSlice := make([]CommandTemplate, 0, len(commands))
-	for _, cmd := range commands {
-		commandsSlice = append(commandsSlice, CommandTemplate{
-			Name:         cmd.Name,
-			Template:     cmd.Template,
-			Description:  cmd.Description,
-			IgnoreTarget: cmd.IgnoreTarget,
-			MaximumQueue: cmd.MaximumQueue,
-		})
-	}
-
-	info := h.server.GetInfo()
-
-	response := AppConfigResponse{
-		Type:     "app_config",
-		Version:  utils.GetAppVersion(),
-		Host:     info,
-		Commands: commandsSlice,
-	}
-
-	if err := conn.WriteJSON(response); err != nil {
-		logger.Errorf("Failed to send app config: %v", err)
-	}
-}
-
-func (h *Handler) handleStopCommand(req CommandRequest, clientIP string) {
-	if req.CommandID == "" {
-		logger.Warnf("Stop command request missing command_id")
-		return
-	}
-
-	if h.executor.Stop(req.CommandID) {
-		logger.Infof("Client [%s] sent stop signal for command: %s", clientIP, req.CommandID)
-	}
-}
-
-func (h *Handler) sendStreamingResponse(conn *websocket.Conn, resp CommandResponse, isComplete bool, commandID string, outputMode string, stopped bool) {
-	streamResp := map[string]any{
-		"type":        "command_output",
-		"success":     resp.Success,
-		"host":        resp.Host,
-		"command":     resp.Command,
-		"target":      resp.Target,
-		"output":      resp.Output,
-		"error":       resp.Error,
-		"is_complete": isComplete,
-		"command_id":  commandID,
-		"output_mode": outputMode,
-		"stopped":     stopped,
-	}
-
-	data, err := json.Marshal(streamResp)
-	if err != nil {
-		logger.Errorf("Failed to marshal streaming response: %v", err)
-		return
-	}
-
-	h.clientsLock.RLock()
-	defer h.clientsLock.RUnlock()
-
-	if _, ok := h.clients[conn]; ok {
-		conn.WriteMessage(websocket.TextMessage, data)
-	}
-}
-
-func (h *Handler) createCommandResponse(req CommandRequest, success bool) CommandResponse {
-	return CommandResponse{
-		Success: success,
-		Host:    "localhost",
-		Command: req.Command,
-		Target:  req.Target,
-	}
+	return false
 }
 
 func (rl *RateLimiter) checkRateLimit(sessionID string) bool {
 	if !rl.enabled {
-		return true
-	}
-
-	rl.mu.RLock()
-	session, exists := rl.sessions[sessionID]
-	rl.mu.RUnlock()
-
-	if !exists {
-		rl.mu.Lock()
-		rl.sessions[sessionID] = &SessionRateLimit{
-			timestamps: make([]time.Time, 0),
-		}
-		rl.mu.Unlock()
 		return true
 	}
 
@@ -564,7 +493,21 @@ func (rl *RateLimiter) checkRateLimit(sessionID string) bool {
 
 	now := time.Now()
 
-	session.timestamps = filterRecentTimestamps(session.timestamps, now, rl.timeWindow)
+	if _, exists := rl.sessions[sessionID]; !exists {
+		rl.sessions[sessionID] = &SessionRateLimit{
+			timestamps: []time.Time{},
+		}
+	}
+
+	session := rl.sessions[sessionID]
+
+	validTimestamps := []time.Time{}
+	for _, ts := range session.timestamps {
+		if now.Sub(ts) < rl.timeWindow {
+			validTimestamps = append(validTimestamps, ts)
+		}
+	}
+	session.timestamps = validTimestamps
 
 	if len(session.timestamps) >= rl.maxCommands {
 		return false
@@ -575,39 +518,24 @@ func (rl *RateLimiter) checkRateLimit(sessionID string) bool {
 }
 
 func (rl *RateLimiter) getRemainingTime(sessionID string) time.Duration {
+	if !rl.enabled {
+		return 0
+	}
+
 	rl.mu.RLock()
+	defer rl.mu.RUnlock()
+
 	session, exists := rl.sessions[sessionID]
-	rl.mu.RUnlock()
-
-	if !exists {
+	if !exists || len(session.timestamps) == 0 {
 		return 0
 	}
 
-	rl.mu.Lock()
-	defer rl.mu.Unlock()
-
-	now := time.Now()
-	session.timestamps = filterRecentTimestamps(session.timestamps, now, rl.timeWindow)
-
-	if len(session.timestamps) == 0 {
-		return 0
-	}
-
-	oldest := session.timestamps[0]
-	elapsed := now.Sub(oldest)
+	oldestTimestamp := session.timestamps[0]
+	elapsed := time.Since(oldestTimestamp)
 	remaining := rl.timeWindow - elapsed
+
 	if remaining < 0 {
-		remaining = 0
+		return 0
 	}
 	return remaining
-}
-
-func filterRecentTimestamps(timestamps []time.Time, now time.Time, window time.Duration) []time.Time {
-	var result []time.Time
-	for _, t := range timestamps {
-		if now.Sub(t) < window {
-			result = append(result, t)
-		}
-	}
-	return result
 }

@@ -14,24 +14,9 @@
 
 ## Quick Start
 
-### Option 1: Docker (Recommended)
+#### Installation Prerequisites
 
-```bash
-# Using Docker Compose
-docker-compose up -d
-
-# Or using Docker CLI
-docker build -t yals-lite .
-docker run -d -p 8080:8080 --cap-add=NET_RAW --cap-add=NET_ADMIN yals-lite
-```
-
-See [DOCKER.md](DOCKER.md) for detailed Docker deployment guide.
-
-### Option 2: Binary Installation
-
-#### Prerequisites
-
-- Go 1.21 or higher
+- Go 1.25.5 or higher
 - Linux/Windows/macOS
 
 #### Installation
@@ -87,15 +72,12 @@ info:
 commands:
   ping:
     template: "ping -c 4"
-    description: "ICMP Ping test"
     ignore_target: false
   traceroute:
     template: "traceroute"
-    description: "Trace network path"
     ignore_target: false
   uname:
     template: "uname -a"
-    description: "System information"
     ignore_target: true
 ```
 

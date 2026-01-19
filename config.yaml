@@ -26,13 +26,10 @@ info:
 commands:
   ping:
     template: "ping -c 4"
-    description: "ICMP Ping test"
     ignore_target: false
   nexttrace:
     template: "nexttrace -eMC"
-    description: "Super traceroute"
     ignore_target: false
   uname:
     template: "uname -a"
-    description: "System information"
     ignore_target: true

@@ -5,9 +5,14 @@ import (
 	"YALS/internal/validator"
 	"bufio"
 	"fmt"
+	"io"
 	"os/exec"
+	"runtime"
 	"strings"
 	"sync"
+
+	"golang.org/x/text/encoding/simplifiedchinese"
+	"golang.org/x/text/transform"
 )
 
 var shellOperators = []string{"|", "&&", "||", ">", "<", ";"}
@@ -258,7 +263,7 @@ func (e *Executor) streamOutput(pipe interface{ Read([]byte) (int, error) }, out
 			// Stop signal received, exit gracefully
 			return
 		default:
-			line := scanner.Text()
+			line := convertToUTF8(scanner.Text())
 			// Use select to avoid panic on closed channel
 			select {
 			case <-stopped:
@@ -343,4 +348,21 @@ func generateCommandID(command, target, sessionID string) string {
 		return fmt.Sprintf("%s-%s-%s", command, target, sessionID)
 	}
 	return fmt.Sprintf("%s-%s", command, sessionID)
+}
+
+// convertToUTF8 converts the input string from GBK to UTF-8 if running on Windows
+func convertToUTF8(input string) string {
+	if runtime.GOOS != "windows" {
+		return input
+	}
+
+	// Try to convert from GBK to UTF-8
+	decoder := simplifiedchinese.GBK.NewDecoder()
+	reader := transform.NewReader(strings.NewReader(input), decoder)
+	output, err := io.ReadAll(reader)
+	if err != nil {
+		// If conversion fails, return original string
+		return input
+	}
+	return string(output)
 }

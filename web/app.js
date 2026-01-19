@@ -1,102 +1,62 @@
 class YALSClient {
     constructor() {
-        this.ws = null;
         this.reconnectAttempts = 0;
         this.maxReconnectAttempts = 5;
         this.reconnectDelay = 3000;
         this.selectedCommand = null;
         this.commands = [];
-        this.currentOutput = '';
         this.isRunning = false;
+        this.eventSource = null;
+        this.abortController = null;
 
         this.initElements();
-        this.initWebSocket();
+        this.initSession();
         this.bindEvents();
     }
 
     initElements() {
-        this.statusDot = document.getElementById('statusDot');
-        this.statusText = document.getElementById('statusText');
         this.hostInfo = document.getElementById('hostInfo');
-        this.commandSelector = document.getElementById('commandSelector');
+        this.commandSelector = document.getElementById('commandSelect');
         this.targetInput = document.getElementById('targetInput');
         this.ipVersionSelect = document.getElementById('ipVersionSelect');
         this.executeBtn = document.getElementById('executeBtn');
         this.stopBtn = document.getElementById('stopBtn');
         this.terminalBody = document.getElementById('terminalBody');
         this.rateLimitInfo = document.getElementById('rateLimitInfo');
-        this.footerVersion = document.getElementById('footerVersion');
+        this.headerVersion = document.getElementById('headerVersion');
         this.currentSessionID = null;
     }
 
-    async initWebSocket() {
-        // Only get session ID if we don't have one yet
-        if (!this.currentSessionID) {
-            try {
-                const response = await fetch('/api/session');
-                const data = await response.json();
-                this.currentSessionID = data.session_id;
-            } catch (error) {
-                console.error('Failed to get session ID:', error);
-                // If we can't get session ID, schedule reconnect
-                this.scheduleReconnect();
-                return;
-            }
+    async initSession() {
+        try {
+            const response = await fetch('/api/session');
+            const data = await response.json();
+            this.currentSessionID = data.session_id;
+            this.loadNodeData();
+        } catch (error) {
+            console.error('Failed to get session ID:', error);
+            this.scheduleReconnect();
         }
+    }
 
-        const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-        const wsUrl = `${protocol}//${window.location.host}/ws/${this.currentSessionID}`;
-
-        this.ws = new WebSocket(wsUrl);
-
-        this.ws.onopen = () => {
+    async loadNodeData() {
+        try {
+            const response = await fetch(`/api/node?session_id=${encodeURIComponent(this.currentSessionID)}`);
+            if (!response.ok) {
+                throw new Error('Failed to load node data');
+            }
+            const data = await response.json();
+            this.handleNodeData(data);
             this.setConnectionStatus(true);
             this.reconnectAttempts = 0;
-            this.sendMessage({ type: 'get_commands' });
-            this.sendMessage({ type: 'get_config' });
-        };
-
-        this.ws.onclose = () => {
+        } catch (error) {
+            console.error('Failed to load node data:', error);
             this.setConnectionStatus(false);
             this.scheduleReconnect();
-        };
-
-        this.ws.onerror = (error) => {
-            console.error('WebSocket error:', error);
-            this.setConnectionStatus(false);
-        };
-
-        this.ws.onmessage = (event) => {
-            this.handleMessage(JSON.parse(event.data));
-        };
-    }
-
-    setConnectionStatus(connected) {
-        this.statusDot.classList.toggle('connected', connected);
-        this.statusText.textContent = connected ? 'Connected' : 'Disconnected';
-    }
-
-    scheduleReconnect() {
-        if (this.reconnectAttempts < this.maxReconnectAttempts) {
-            this.reconnectAttempts++;
-            this.statusText.textContent = `Reconnecting (${this.reconnectAttempts}/${this.maxReconnectAttempts})...`;
-            setTimeout(() => {
-                // Try to reconnect with existing session ID first
-                this.initWebSocket();
-            }, this.reconnectDelay);
-        } else {
-            this.statusText.textContent = 'Connection failed. Please refresh the page.';
-            this.currentSessionID = null; // Reset session ID for next attempt
         }
     }
 
-    sendMessage(message) {
-        if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-            this.ws.send(JSON.stringify(message));
-        }
-    }
-
-    handleMessage(data) {
+    handleNodeData(data) {
         switch (data.type) {
             case 'app_config':
                 this.renderHostInfo(data.host);
@@ -104,11 +64,8 @@ class YALSClient {
                 this.commands = commands;
                 this.renderCommands(commands);
                 if (data.version) {
-                    this.footerVersion.textContent = 'Version ' + data.version;
+                    this.headerVersion.textContent = 'Version ' + data.version;
                 }
-                break;
-            case 'command_output':
-                this.handleCommandOutput(data);
                 break;
         }
     }
@@ -145,15 +102,12 @@ class YALSClient {
 
     renderCommands(commands) {
         if (!commands || commands.length === 0) {
-            this.commandSelector.innerHTML = '<div class="empty-state">No commands available</div>';
+            this.commandSelector.innerHTML = '<option value="">No commands available</option>';
             return;
         }
 
         this.commandSelector.innerHTML = commands.map(cmd => `
-            <button class="command-btn" data-command="${this.escapeHtml(cmd.name)}">
-                <span class="command-btn-name">${this.escapeHtml(cmd.name)}</span>
-                <span class="command-btn-desc">${this.escapeHtml(cmd.description || '')}</span>
-            </button>
+            <option value="${this.escapeHtml(cmd.name)}">${this.escapeHtml(cmd.name)}</option>
         `).join('');
 
         if (commands.length > 0) {
@@ -164,16 +118,12 @@ class YALSClient {
     }
 
     bindEvents() {
-        this.commandSelector.addEventListener('click', (e) => {
-            if (e.target.classList.contains('command-btn') || e.target.closest('.command-btn')) {
-                const btn = e.target.classList.contains('command-btn') ? e.target : e.target.closest('.command-btn');
-                this.selectCommand(btn.dataset.command);
-            }
+        this.commandSelector.addEventListener('change', (e) => {
+            this.selectCommand(e.target.value);
         });
 
         this.targetInput.addEventListener('input', () => this.updateExecuteButton());
 
-        // Add Enter key support for target input
         this.targetInput.addEventListener('keypress', (e) => {
             if (e.key === 'Enter' && !this.executeBtn.disabled) {
                 this.executeCommand();
@@ -187,9 +137,7 @@ class YALSClient {
     selectCommand(commandName) {
         this.selectedCommand = commandName;
 
-        document.querySelectorAll('.command-btn').forEach(btn => {
-            btn.classList.toggle('selected', btn.dataset.command === commandName);
-        });
+        this.commandSelector.value = commandName;
 
         this.updateExecuteButton();
     }
@@ -215,7 +163,7 @@ class YALSClient {
         }
     }
 
-    executeCommand() {
+    async executeCommand() {
         if (!this.selectedCommand) return;
 
         this.clearTerminal();
@@ -230,52 +178,93 @@ class YALSClient {
 
         this.isRunning = true;
         this.executeBtn.disabled = true;
-        this.stopBtn.disabled = true; // Keep disabled until we get command_id
-        this.targetInput.disabled = true; // Disable target input during execution
-        this.ipVersionSelect.disabled = true; // Disable IP version select during execution
-        this.disableCommandButtons(); // Disable command selection during execution
-        this.currentCommandId = null; // Reset command ID
+        this.stopBtn.disabled = true;
+        this.targetInput.disabled = true;
+        this.ipVersionSelect.disabled = true;
+        this.disableCommandButtons();
+        this.currentCommandId = null;
         this.rateLimitInfo.style.display = 'none';
 
         this.appendOutput(`<span class="command-line">$ ${this.selectedCommand}${target ? ' ' + target : ''}</span>\n`, 'normal');
 
-        this.sendMessage({
-            type: 'execute_command',
-            command: this.selectedCommand,
-            target: target || '',
-            ip_version: this.ipVersionSelect.value
-        });
-    }
+        try {
+            this.abortController = new AbortController();
 
-    stopCommand() {
-        if (!this.currentCommandId) {
-            console.warn('Cannot stop command: command_id not available yet');
-            return;
-        }
+            const response = await fetch(`/api/exec?session_id=${encodeURIComponent(this.currentSessionID)}`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({
+                    agent: 'localhost',
+                    command: this.selectedCommand,
+                    target: target || '',
+                    ip_version: this.ipVersionSelect.value
+                }),
+                signal: this.abortController.signal
+            });
 
-        this.sendMessage({
-            type: 'stop_command',
-            command_id: this.currentCommandId
-        });
+            if (!response.ok) {
+                const errorData = await response.json().catch(() => ({}));
+                throw new Error(errorData.error);
+            }
 
-        // Disable stop button immediately after sending stop signal
-        this.stopBtn.disabled = true;
-    }
+            this.stopBtn.disabled = false;
 
-    handleCommandOutput(data) {
-        // Set command ID and enable stop button as soon as we receive it
-        if (data.command_id && !this.currentCommandId) {
-            this.currentCommandId = data.command_id;
-            this.stopBtn.disabled = false; // Enable stop button once we have command_id
-        }
+            const reader = response.body.getReader();
+            const decoder = new TextDecoder();
+            let buffer = '';
 
-        if (data.is_complete) {
+            while (true) {
+                const { done, value } = await reader.read();
+                if (done) break;
+
+                buffer += decoder.decode(value, { stream: true });
+                const lines = buffer.split('\n\n');
+                buffer = lines.pop();
+
+                for (const line of lines) {
+                    if (line.startsWith('data: ')) {
+                        try {
+                            const data = JSON.parse(line.slice(6));
+                            this.handleSSEMessage(data);
+                        } catch (e) {
+                            console.error('Failed to parse SSE message:', e);
+                        }
+                    }
+                }
+            }
+
+        } catch (error) {
+            if (error.name !== 'AbortError') {
+                console.error('Execute command error:', error);
+                this.appendOutput(`Error: ${this.escapeHtml(error.message)}\n`, 'error');
+            }
+        } finally {
             this.isRunning = false;
             this.executeBtn.disabled = false;
             this.stopBtn.disabled = true;
-            this.targetInput.disabled = false; // Re-enable target input
-            this.ipVersionSelect.disabled = false; // Re-enable IP version select
-            this.enableCommandButtons(); // Re-enable command selection
+            this.targetInput.disabled = false;
+            this.ipVersionSelect.disabled = false;
+            this.enableCommandButtons();
+            this.currentCommandId = null;
+            this.abortController = null;
+        }
+    }
+
+    handleSSEMessage(data) {
+        if (data.command_id && !this.currentCommandId) {
+            this.currentCommandId = data.command_id;
+            this.stopBtn.disabled = false;
+        }
+
+        if (data.type === 'complete') {
+            this.isRunning = false;
+            this.executeBtn.disabled = false;
+            this.stopBtn.disabled = true;
+            this.targetInput.disabled = false;
+            this.ipVersionSelect.disabled = false;
+            this.enableCommandButtons();
             this.currentCommandId = null;
         }
 
@@ -284,6 +273,42 @@ class YALSClient {
         } else if (data.output) {
             this.appendOutput(this.escapeHtml(data.output), 'normal');
         }
+    }
+
+    async stopCommand() {
+        if (!this.currentCommandId) {
+            console.warn('Cannot stop command: command_id not available yet');
+            return;
+        }
+
+        if (this.abortController) {
+            this.abortController.abort();
+        }
+
+        try {
+            const response = await fetch(`/api/stop?session_id=${encodeURIComponent(this.currentSessionID)}`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({
+                    command_id: this.currentCommandId
+                })
+            });
+
+            const data = await response.json();
+
+            if (data.success) {
+                this.appendOutput('\n*** Stopped ***\n', 'normal');
+            } else {
+                this.appendOutput(`Error: ${this.escapeHtml(data.error || 'Failed to stop command')}\n`, 'error');
+            }
+        } catch (error) {
+            console.error('Stop command error:', error);
+            this.appendOutput(`Error: ${this.escapeHtml(error.message)}\n`, 'error');
+        }
+
+        this.stopBtn.disabled = true;
     }
 
     appendOutput(text, type) {
@@ -304,19 +329,11 @@ class YALSClient {
     }
 
     disableCommandButtons() {
-        document.querySelectorAll('.command-btn').forEach(btn => {
-            btn.disabled = true;
-            btn.style.opacity = '0.5';
-            btn.style.cursor = 'not-allowed';
-        });
+        this.commandSelector.disabled = true;
     }
 
     enableCommandButtons() {
-        document.querySelectorAll('.command-btn').forEach(btn => {
-            btn.disabled = false;
-            btn.style.opacity = '';
-            btn.style.cursor = 'pointer';
-        });
+        this.commandSelector.disabled = false;
     }
 
     escapeHtml(text) {

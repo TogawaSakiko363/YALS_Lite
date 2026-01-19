@@ -37,17 +37,12 @@ type Config struct {
 
 type CommandTemplate struct {
 	Template     string `yaml:"template"`
-	Description  string `yaml:"description"`
 	IgnoreTarget bool   `yaml:"ignore_target"`
-	MaximumQueue int    `yaml:"maxmium_queue"`
 }
 
-type CommandInfo struct {
+type CommandName struct {
 	Name         string `json:"name"`
-	Template     string `json:"template"`
-	Description  string `json:"description"`
 	IgnoreTarget bool   `json:"ignore_target"`
-	MaximumQueue int    `json:"maxmium_queue"`
 }
 
 type commandWithLine struct {
@@ -152,12 +147,8 @@ func extractCommandsFromNode(node *yaml.Node, commands *[]commandWithLine) {
 							switch propKey {
 							case "template":
 								cmdTemplate.Template = propValue.Value
-							case "description":
-								cmdTemplate.Description = propValue.Value
 							case "ignore_target":
 								cmdTemplate.IgnoreTarget = propValue.Value == "true"
-							case "maxmium_queue":
-								fmt.Sscanf(propValue.Value, "%d", &cmdTemplate.MaximumQueue)
 							}
 						}
 
@@ -193,18 +184,15 @@ func (s *ServerInfo) GetCommandConfig(commandName string) (CommandTemplate, bool
 	return CommandTemplate{}, false
 }
 
-func (s *ServerInfo) GetCommands() []CommandInfo {
+func (s *ServerInfo) GetCommands() []CommandName {
 	commandsMap := s.cfg.Commands
-	commands := make([]CommandInfo, 0, len(commandOrder))
+	commands := make([]CommandName, 0, len(commandOrder))
 
 	for _, name := range commandOrder {
 		if template, exists := commandsMap[name]; exists {
-			commands = append(commands, CommandInfo{
+			commands = append(commands, CommandName{
 				Name:         name,
-				Template:     template.Template,
-				Description:  template.Description,
 				IgnoreTarget: template.IgnoreTarget,
-				MaximumQueue: template.MaximumQueue,
 			})
 		}
 	}
@@ -219,12 +207,9 @@ func (s *ServerInfo) GetCommands() []CommandInfo {
 
 	for _, name := range unorderedNames {
 		template := commandsMap[name]
-		commands = append(commands, CommandInfo{
+		commands = append(commands, CommandName{
 			Name:         name,
-			Template:     template.Template,
-			Description:  template.Description,
 			IgnoreTarget: template.IgnoreTarget,
-			MaximumQueue: template.MaximumQueue,
 		})
 	}
 

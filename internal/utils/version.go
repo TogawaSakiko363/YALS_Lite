@@ -8,7 +8,7 @@ import (
 // Version Information
 const (
 	AppName    = "YALS Lite"
-	AppVersion = "2026.1-beta2"
+	AppVersion = "2026.0119"
 )
 
 // GetVersionInfo Returns formatted version information
